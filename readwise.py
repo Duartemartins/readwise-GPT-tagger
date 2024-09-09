@@ -19,7 +19,10 @@ headers = {"Authorization": f"Token {api_token}"}
 
 # CSV file to save the data
 csv_file = "Highlights_with_Tags.csv"
+success_log_file = "updated_highlights_log.txt"
 
+# Maximum number of retries
+MAX_RETRIES = 5
 
 def generate_tags_from_openai(highlight_text):
     """
@@ -45,100 +48,29 @@ def generate_tags_from_openai(highlight_text):
         return []
 
 
+def normalize_text(text):
+    """
+    Normalizes the text by stripping extra spaces, converting to lowercase, 
+    and removing special characters that might affect matching.
+    """
+    return text.strip().lower()
 
-def fetch_highlights():
-    url = "https://readwise.io/api/v2/export/"
-    next_page_cursor = None
-    all_highlights = []
 
-    while True:
-        # Add pagination parameter if there is a next page
-        params = {"pageCursor": next_page_cursor} if next_page_cursor else {}
-        response = requests.get(url, headers=headers, params=params)
+def find_matching_highlight(book, highlight_text):
+    """
+    Finds a matching highlight in the book based on partial text matching.
+    """
+    normalized_highlight_text = normalize_text(highlight_text)
+    for highlight in book["highlights"]:
+        normalized_book_highlight = normalize_text(highlight["text"])
+        
+        # Perform partial matching (first 100 characters)
+        if normalized_highlight_text[:100] in normalized_book_highlight:
+            return highlight
 
-        if response.status_code == 200:
-            data_export = response.json()
+    # No match found
+    return None
 
-            # Add results from this page to the highlights list
-            all_highlights.extend(data_export.get("results", []))
-
-            # Check if there's another page of data
-            next_page_cursor = data_export.get("nextPageCursor")
-            if not next_page_cursor:
-                break  # No more pages, exit loop
-        else:
-            print(f"Failed to fetch export data. Status code: {response.status_code}")
-            print(response.text)
-            break
-
-    return all_highlights
-
-try:
-    # Fetch all highlights across all pages
-    all_books = fetch_highlights()
-
-    # Open a CSV file to write data
-    with open(csv_file, mode="w", newline="", encoding="utf-8") as file:
-        writer = csv.writer(file)
-        writer.writerow(["Book Title", "Highlight", "Tags"])  # CSV header
-
-        # Iterate over each book
-        for book in all_books:
-            title = book.get("title", "Untitled")  # Use 'Untitled' as fallback if title is missing
-            highlights = book.get("highlights", [])
-
-            # Add the book title to the document
-            para = document.add_paragraph()
-            para.add_run(title).bold = True
-
-            # Add each highlight to the document
-            for highlight in highlights:
-                highlight_text = highlight.get("text", "").strip()
-                if highlight_text:
-                    document.add_paragraph(highlight_text)
-
-                    # Get the existing tags from the highlight
-                    existing_tags = [tag["name"] for tag in highlight.get("tags", [])]
-
-                    # If there are fewer than 3 tags, use OpenAI to generate additional tags
-                    if len(existing_tags) < 3:
-                        additional_tags = generate_tags_from_openai(highlight_text)
-                        # Add only enough tags to make the total equal to 3
-                        existing_tags.extend(additional_tags[: (3 - len(existing_tags))])
-
-                    # Add the tags to the document
-                    if existing_tags:
-                        tags_text = ", ".join(existing_tags)
-                        document.add_paragraph(f"Tags: {tags_text}").italic = True
-
-                    # Write to CSV and print the entry in the terminal
-                    writer.writerow([title, highlight_text, ", ".join(existing_tags)])
-                    print(f"CSV entry logged: Title: {title}, Highlight: {highlight_text}, Tags: {', '.join(existing_tags)}")
-
-    # Save the document
-    document.save("Highlights_with_Tags.docx")
-    print("Highlights have been successfully saved to 'Highlights_with_Tags.docx' and CSV file.")
-
-except requests.exceptions.RequestException as e:
-    # Handle any network or request errors
-    print(f"Request error: {e}")
-
-except KeyError as e:
-    # Handle any KeyError that may arise if a key is missing
-    print(f"Key error: {e}")
-
-except Exception as e:
-    # General error handler to catch any other exceptions
-    print(f"An error occurred: {e}")
-
-# CSV file with the highlights and tags
-csv_file = "Highlights_with_Tags.csv"
-
-# Log file to track successfully updated highlight IDs
-success_log_file = "updated_highlights_log.txt"
-
-# Maximum number of retries
-MAX_RETRIES = 5
 
 def load_updated_highlight_ids():
     """
@@ -149,12 +81,14 @@ def load_updated_highlight_ids():
             return {line.strip() for line in f.readlines()}
     return set()
 
+
 def log_successful_update(highlight_id):
     """
     Log a successfully updated highlight ID to the file.
     """
     with open(success_log_file, "a") as f:
         f.write(f"{highlight_id}\n")
+
 
 def update_highlight_tags(highlight_id, tags):
     """
@@ -195,19 +129,28 @@ def update_highlight_tags(highlight_id, tags):
 
 def fetch_highlights():
     """
-    Fetch highlights from Readwise and return them.
+    Fetch highlights from Readwise and return them, with pagination support.
     """
-    try:
-        response = requests.get("https://readwise.io/api/v2/export/", headers=headers)
+    url = "https://readwise.io/api/v2/export/"
+    next_page_cursor = None
+    all_highlights = []
+
+    while True:
+        params = {"pageCursor": next_page_cursor} if next_page_cursor else {}
+        response = requests.get(url, headers=headers, params=params)
+
         if response.status_code == 200:
-            return response.json()["results"]
+            data_export = response.json()
+            all_highlights.extend(data_export.get("results", []))
+            next_page_cursor = data_export.get("nextPageCursor")
+            if not next_page_cursor:
+                break  # No more pages
         else:
-            print(f"Failed to fetch highlights. Status code: {response.status_code}")
+            print(f"Failed to fetch export data. Status code: {response.status_code}")
             print(response.text)
-            return []
-    except requests.exceptions.RequestException as e:
-        print(f"Request error: {e}")
-        return []
+            break
+
+    return all_highlights
 
 
 def update_tags_from_csv():
@@ -229,10 +172,9 @@ def update_tags_from_csv():
             matching_highlight = None
             for book in highlights_data:
                 if book["title"] == title:
-                    for highlight in book["highlights"]:
-                        if highlight["text"] == highlight_text:
-                            matching_highlight = highlight
-                            break
+                    matching_highlight = find_matching_highlight(book, highlight_text)
+                    if matching_highlight:
+                        break
 
             if matching_highlight:
                 highlight_id = matching_highlight["id"]
@@ -245,7 +187,14 @@ def update_tags_from_csv():
                 # Update the highlight's tags
                 update_highlight_tags(highlight_id, tags)
             else:
+                # Log the text comparison for debugging
                 print(f"No matching highlight found for: {highlight_text}")
+
+                # Print comparison logs
+                print(f"Tried to match CSV highlight: {highlight_text}")
+                for book in highlights_data:
+                    for highlight in book["highlights"]:
+                        print(f"Compared with Readwise highlight: {highlight['text'][:100]}")
 
 
 # Start the process
