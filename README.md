@@ -1,4 +1,4 @@
-# Highlights Project
+# Readwise GPT Tagger Project
 
 This project retrieves, processes, and enriches highlights from your Readwise account, generating both CSV and DOCX files that include the highlights and associated tags. If the highlights have fewer than 3 tags, the script uses OpenAI to generate additional relevant tags.
 
